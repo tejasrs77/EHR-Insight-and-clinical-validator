@@ -8,6 +8,8 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-API-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-UI-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-pgvector-4169E1?logo=postgresql&logoColor=white)](https://github.com/pgvector/pgvector)
+[![Docker](https://img.shields.io/badge/Docker-Deployment-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+[![AWS](https://img.shields.io/badge/AWS-EC2-FF9900?logo=amazonwebservices&logoColor=white)](https://aws.amazon.com/ec2/)
 [![License](https://img.shields.io/badge/License-Not%20specified-lightgrey)](#license)
 
 </div>
@@ -35,18 +37,33 @@ The system combines a Streamlit frontend, a FastAPI backend, PostgreSQL with pgv
 
 ```mermaid
 flowchart LR
-    U["Clinician / Authorized User"] --> UI["Streamlit UI<br/>Port 8501"]
-    UI -->|"Patient ID + question"| API["FastAPI Service<br/>Port 8000"]
+    USER["Clinician / Authorized User"] -->|"HTTP :8501"| UI
 
-    API --> EMB["BioClinical ModernBERT<br/>Question embedding"]
-    EMB --> DB[("PostgreSQL + pgvector<br/>patient_encounters")]
-    API -->|"subject_id filter"| DB
-    DB -->|"Top matching records"| PII["Microsoft Presidio<br/>PII redaction"]
-    PII --> GR["NVIDIA NeMo Guardrails<br/>Policy enforcement"]
-    GR --> LLM["Groq OpenAI-compatible API<br/>openai/gpt-oss-120b"]
-    LLM -->|"Guarded response"| API
+    subgraph AWS["AWS Cloud — Amazon VPC"]
+        subgraph APP["Application EC2 Instance"]
+            UI["Streamlit UI<br/>Port 8501"]
+            API["FastAPI Service<br/>Port 8000"]
+            EMB["BioClinical ModernBERT<br/>Question embedding"]
+            PII["Microsoft Presidio<br/>PII redaction"]
+            GR["NVIDIA NeMo Guardrails<br/>Policy enforcement"]
+        end
+
+        subgraph DATA["Database EC2 Instance"]
+            DB[("PostgreSQL 14 + pgvector<br/>patient_encounters")]
+        end
+    end
+
+    UI -->|"Patient ID + question"| API
+    API --> EMB
+    EMB -->|"768-dimensional vector"| API
+    API -->|"Patient-scoped query<br/>Private VPC :5432"| DB
+    DB -->|"Top matching records"| PII
+    PII --> GR
+    GR -->|"OpenAI-compatible request"| LLM["Groq-hosted LLM<br/>openai/gpt-oss-120b"]
+    LLM -->|"Generated response"| GR
+    GR --> API
     API --> UI
-    UI -->|"Answer + disclaimer"| U
+    UI -->|"Guarded answer + disclaimer"| USER
 
     classDef interface fill:#e8f3ff,stroke:#1677ff,color:#102a43
     classDef security fill:#fff3cd,stroke:#d39e00,color:#4a3b00
@@ -58,12 +75,13 @@ flowchart LR
 
 ### Request flow
 
-1. The user selects a patient and asks a question in Streamlit.
-2. FastAPI converts the question into a 768-dimensional clinical embedding.
-3. PostgreSQL searches only records belonging to the selected patient.
-4. Presidio redacts supported PII from the retrieved context.
-5. NeMo Guardrails evaluates the request and controls the model response.
-6. The answer returns to the UI with a medical-use disclaimer.
+1. The user connects to the Streamlit interface on the application EC2 instance.
+2. Streamlit sends the selected patient ID and question to FastAPI inside the same container.
+3. FastAPI converts the question into a 768-dimensional clinical embedding.
+4. FastAPI queries PostgreSQL over the private AWS VPC connection and restricts retrieval to the selected patient.
+5. Presidio redacts supported PII from the retrieved context.
+6. NeMo Guardrails evaluates the request before the Groq-hosted model generates a response.
+7. The guarded answer returns to the browser with a medical-use disclaimer.
 
 ## Technology stack
 
@@ -77,6 +95,8 @@ flowchart LR
 | PII protection | Microsoft Presidio + spaCy | Detection and anonymization |
 | Guardrails | NVIDIA NeMo Guardrails | Clinical safety rules |
 | LLM access | Groq OpenAI-compatible endpoint | Response generation |
+| Containers | Docker | Reproducible application packaging |
+| Cloud | AWS EC2 + VPC security groups | Application and database hosting |
 
 ## Repository structure
 
@@ -100,6 +120,9 @@ flowchart LR
 │   │   └── rails.co
 │   ├── pii_redaction/presidio_service.py
 │   └── ui/app.py
+├── .dockerignore
+├── Dockerfile
+├── start.sh
 ├── requirements.txt
 └── README.md
 ```
@@ -223,6 +246,95 @@ Example chat request:
 }
 ```
 
+## AWS EC2 deployment
+
+The deployed architecture uses two EC2 instances in the same Amazon VPC:
+
+| Instance | Runs | Network access |
+|---|---|---|
+| Application EC2 | Docker, Streamlit, FastAPI, embedding model, Presidio and NeMo Guardrails | TCP `8501` from authorized users; SSH `22` from the administrator's IP |
+| Database EC2 | PostgreSQL 14 and pgvector | TCP `5432` only from the application EC2 security group or private IP |
+
+The FastAPI service remains internal to the container on port `8000`. Only the Streamlit port needs to be published for browser access.
+
+### 1. Connect to the application instance
+
+```bash
+ssh -i /path/to/your-key.pem ubuntu@<APPLICATION_EC2_PUBLIC_IP>
+```
+
+Restrict SSH access to your own public IP in the EC2 security group. Do not commit the `.pem` file.
+
+### 2. Clone and configure the project
+
+```bash
+git clone https://github.com/tejasrs77/EHR-Insight-and-clinical-validator.git
+cd EHR-Insight-and-clinical-validator
+```
+
+Create `.env` using the database EC2 instance's **private IPv4 address**:
+
+```dotenv
+DB_HOST=<DATABASE_EC2_PRIVATE_IP>
+DB_PORT=5432
+DB_NAME=ehr_db
+DB_USER=your_database_user
+DB_PASSWORD=your_database_password
+
+OPENAI_API_KEY=your_groq_api_key
+OPENAI_BASE_URL=https://api.groq.com/openai/v1
+OPENAI_API_BASE=https://api.groq.com/openai/v1
+```
+
+Protect the file and ensure `.env` is listed in both `.gitignore` and `.dockerignore`:
+
+```bash
+chmod 600 .env
+```
+
+### 3. Build and start the container
+
+```bash
+docker build --pull -t fde-project-2:latest .
+
+docker rm -f fde-project-2 2>/dev/null || true
+
+docker run -d \
+  --name fde-project-2 \
+  --restart unless-stopped \
+  --env-file .env \
+  -p 8501:8501 \
+  fde-project-2:latest
+```
+
+### 4. Verify the deployment
+
+```bash
+docker ps
+docker logs --tail 100 fde-project-2
+
+docker exec fde-project-2 \
+  curl -fsS http://127.0.0.1:8000/openapi.json >/dev/null \
+  && echo "FastAPI is working"
+```
+
+Verify that the application container can reach PostgreSQL:
+
+```bash
+docker exec fde-project-2 python -c "import os,socket; h=os.environ['DB_HOST']; p=int(os.environ['DB_PORT']); c=socket.create_connection((h,p),5); c.close(); print('PostgreSQL is reachable')"
+```
+
+### 5. Open the deployed application
+
+```text
+http://<APPLICATION_EC2_PUBLIC_IP>:8501
+```
+
+The application EC2 security group must allow inbound TCP `8501` from the intended users. The database security group should allow TCP `5432` from the application instance only, rather than from `0.0.0.0/0`.
+
+> [!IMPORTANT]
+> The current deployment serves plain HTTP. For a production deployment, place an HTTPS reverse proxy or an AWS Application Load Balancer with an ACM certificate in front of Streamlit.
+
 ## Security design
 
 - The selected `subject_id` is applied in the SQL retrieval query.
@@ -230,6 +342,8 @@ Example chat request:
 - Retrieved clinical context is redacted before it is sent to the LLM.
 - Guardrails refuse requests for diagnoses, prescriptions, treatment recommendations, or dose changes.
 - Secrets are loaded from environment variables.
+- PostgreSQL traffic uses the database instance's private VPC address.
+- EC2 security groups restrict database access to the application server.
 - The UI labels responses as AI-generated summaries.
 
 These controls reduce risk but do not make the prototype production-ready or establish regulatory compliance. A production deployment would also require authentication, role-based authorization, encryption, audit logging, secret management, monitoring, data-retention controls, and formal clinical validation.
