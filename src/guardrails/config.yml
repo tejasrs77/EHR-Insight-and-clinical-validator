@@ -1,0 +1,10 @@
+models:
+  - type: main
+    engine: openai
+    model: openai/gpt-oss-120b
+    parameters:
+      base_url: "https://api.groq.com/openai/v1"
+
+  - type: embeddings
+    engine: SentenceTransformers
+    model: NeuML/bioclinical-modernbert-base-embeddings
