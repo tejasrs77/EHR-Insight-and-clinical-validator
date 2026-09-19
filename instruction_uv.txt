@@ -1,0 +1,6 @@
+Create a env folder : C:\Tejas\Work\uv-venv\FDE-demo-clinical-env
+uv venv --python 3.12 C:\Tejas\Work\uv-venv\FDE-demo-clinical-env
+Using CPython 3.12.14
+Creating virtual environment at: C:\Tejas\Work\uv-venv\FDE-demo-clinical-env
+Activate with: C:\Monal\Tejas\uv-venv\FDE-demo-clinical-env\Scripts\activate
+& ".venv\Scripts\python.exe" -c "import pandas, psycopg2, dotenv, sqlalchemy; print('Setup successful')"

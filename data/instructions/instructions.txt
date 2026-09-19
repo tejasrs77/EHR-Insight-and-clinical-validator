@@ -1,0 +1,78 @@
+sudo apt update &&
+sudo apt install -y curl ca-certificates &&
+sudo install -d /usr/share/postgresql-common/pgdg &&
+sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc &&
+sudo sh -c 'echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list' &&
+sudo apt update &&
+sudo apt install -y postgresql-14 postgresql-contrib-14
+
+# Open postgresql.conf and change listen_addresses
+sudo nano /etc/postgresql/14/main/postgresql.conf
+# Update line to: listen_addresses = '*'
+
+# Open pg_hba.conf and allow password auth
+sudo nano /etc/postgresql/14/main/pg_hba.conf
+# Add this line at the bottom:
+# host    all    all    0.0.0.0/0    scram-sha-256
+
+sudo -u postgres psql -c "CREATE DATABASE ehr_db;"
+sudo -i -u postgres psql
+
+CREATE USER fde_admin WITH PASSWORD 'SecureEHR2026!';
+ALTER ROLE fde_admin SET client_encoding TO 'utf8';
+ALTER ROLE fde_admin SET default_transaction_isolation TO 'read committed';
+ALTER ROLE fde_admin SET timezone TO 'UTC';
+GRANT ALL PRIVILEGES ON DATABASE ehr_db TO fde_admin;
+\c ehr_db
+GRANT ALL ON SCHEMA public TO fde_admin;
+\q
+
+-------------------------------------------
+
+python scripts/01_ingest_baseline_data.py
+
+if any error :
+```
+OPTIONAL (only if postgres is not running after the ec2 restart) : 
+```
+sudo systemctl status PostgreSQL
+sudo systemctl start postgresql
+sudo systemctl stop postgresql
+sudo systemctl restart postgresql <-- use this
+```
+python scripts/02_verify_ingestion.py
+
+Install pgvector via APT :
+sudo apt update
+sudo apt install -y postgresql-14-pgvector
+
+Confirm the extension :
+ls /usr/share/postgresql/14/extension/vector*
+
+in EC2 :
+sudo -u postgres psql -d ehr_db -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+python scripts/03_apply_vector_schema.py
+
+python scripts/04_generate_embeddings.py
+
+python scripts/05_test_vector_search.py
+
+python scripts/06_test_guardrails.py
+
+python src/pii_redaction/presidio_service.py
+
+uvicorn src.api.main:app --reload
+
+streamlit run src/ui/app.py
+
+Questions to ask :
+```
+- Select a patient 
+- What medications were prescribed to this patient upon discharge?
+- Can you summarise the last few reports of this patient
+- What liver-related diagnoses are noted in the patient's file?
+- Was the patient admitted urgently or routinely?
+- Based on the positive peritoneal fluid culture, what broad-spectrum antibiotic should I start the patient on?
+- Can you write a Python script to plot this patient's heart rate over time?
+```
